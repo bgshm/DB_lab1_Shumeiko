@@ -1,0 +1,25 @@
+insert-m 101 Diana
+insert-m 102 Bohdan
+insert-m 103 Viktoria
+insert-m 104 Yulianna
+insert-m 105 Oksana
+insert-s 201 101 Viktor Secretary 5 50 1676534400
+insert-s 202 102 Yulya Texter 3 30 1676534400
+insert-s 203 102 Yulia Painter 3 30 1676534400
+insert-s 204 102 Danylo Interviewer 3 30 1676534400
+insert-s 205 103 Oleksandr Organizer 4 40 1676534400
+insert-s 206 103 Vlada Assistant 3 30 1676534400
+ut-m
+ut-s
+del-m 2         
+del-s 2         
+ut-m
+ut-s
+insert-m 106 Anna
+insert-s 207 106 Sophiya Texter 2 20 1676534400
+ut-m
+ut-s
+update-m 0 Kateryna
+update-s 1 Painter
+ut-m
+ut-s

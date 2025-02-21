@@ -5,13 +5,91 @@
 #include <cstring>
 #include <ctime>
 #include <iomanip>
-#include "Utils.hpp"
+#include <unordered_map>
+#include <algorithm>
+#include "Constants.hpp"
+#include "Manager.hpp"
+#include "Member.hpp"
 using namespace std;
+
+// Глобальний індекс у пам'яті для slave записів: відображає ID менеджера у вектор позицій записів
+unordered_map<int, vector<int>> slaveIndex;
+
+//------------------------------------------------------
+// Функції утиліти для очищення логічно видалених записів
+//------------------------------------------------------
+
+// Очищує (фізичне видалення) видалені master записи з MASTER_FILE.
+void purgeDeletedMasterRecords() {
+    ifstream inFile(MASTER_FILE, ios::binary);
+    if (!inFile) return;
+    ofstream outFile("temp_master.dat", ios::binary);
+    Manager m;
+    while (inFile.read(reinterpret_cast<char*>(&m), sizeof(Manager))) {
+        if (!m.isDeleted)
+            outFile.write(reinterpret_cast<const char*>(&m), sizeof(Manager));
+    }
+    inFile.close();
+    outFile.close();
+    remove(MASTER_FILE);
+    if (rename("temp_master.dat", MASTER_FILE) != 0) {
+        perror("Error renaming temp_master.dat");
+    }
+}
+
+// Очищує (фізичне видалення) видалені slave записи з SLAVE_FILE.
+void purgeDeletedSlaveRecords() {
+    ifstream inFile(SLAVE_FILE, ios::binary);
+    if (!inFile) return;
+    ofstream outFile("temp_slave.dat", ios::binary);
+    Member m;
+    while (inFile.read(reinterpret_cast<char*>(&m), sizeof(Member))) {
+        if (!m.isDeleted)
+            outFile.write(reinterpret_cast<const char*>(&m), sizeof(Member));
+    }
+    inFile.close();
+    outFile.close();
+    remove(SLAVE_FILE);
+    if (rename("temp_slave.dat", SLAVE_FILE) != 0) {
+        perror("Error renaming temp_slave.dat");
+    }
+}
+
+//------------------------------------------------------
+// Функції для побудови та оновлення slave індексу
+//------------------------------------------------------
+
+// Білдить slave індекс, просканувавши SLAVE_FILE один раз.
+unordered_map<int, vector<int>> buildSlaveIndex() {
+    unordered_map<int, vector<int>> index;
+    ifstream file(SLAVE_FILE, ios::binary);
+    if (!file) return index;
+    Member m;
+    int pos = 0;
+    while (file.read(reinterpret_cast<char*>(&m), sizeof(Member))) {
+        if (!m.isDeleted)
+            index[m.ManagerID].push_back(pos);
+        pos++;
+    }
+    file.close();
+    return index;
+}
+// Повертає поточну кількість slave записів у SLAVE_FILE.
+int getSlaveRecordCount() {
+    ifstream file(SLAVE_FILE, ios::binary | ios::ate);
+    if (!file) return 0;
+    streampos size = file.tellg();
+    return static_cast<int>(size / sizeof(Member));
+}
+
+//------------------------------------------------------
+// Командні функції
+//------------------------------------------------------
 
 // Helper: записує Manager запис в кінці MASTER_FILE
 void insertManager(const Manager& m) {
     fstream file(MASTER_FILE, ios::in | ios::out | ios::binary);
-    if (!file) { // файл може не існувати -> створюємо його
+    if (!file) { // file may not exist -> create it
         file.open(MASTER_FILE, ios::out | ios::binary);
     }
     file.seekp(0, ios::end);
@@ -48,16 +126,22 @@ bool updateManagerRecord(int recNo, const Manager& m) {
     return true;
 }
 
-// Helper: зчитує всі підлеглі записи, пов'язані з даним ManagerID
-std::vector<Member> getSlaveRecordsForManager(int managerID) {
+// Helper: отримує slave записи для заданого ManagerID за допомогою індексу
+vector<Member> getSlaveRecordsForManagerFromIndex(int managerID) {
     vector<Member> members;
+    auto it = slaveIndex.find(managerID);
+    if (it == slaveIndex.end())
+        return members;
     ifstream file(SLAVE_FILE, ios::binary);
     if (!file) return members;
-    Member cm;
-    while (file.read(reinterpret_cast<char*>(&cm), sizeof(Member))) {
-        if (!cm.isDeleted && cm.ManagerID == managerID)
-            members.push_back(cm);
+    for (int recNo : it->second) {
+        file.seekg(recNo * sizeof(Member), ios::beg);
+        Member m;
+        file.read(reinterpret_cast<char*>(&m), sizeof(Member));
+        if (file.gcount() == sizeof(Member) && !m.isDeleted)
+            members.push_back(m);
     }
+    file.close();
     return members;
 }
 
@@ -84,7 +168,7 @@ void command_get_m(int recNo) {
 
 // get-s: виводить всі slave записи для заданого запису manager (за ідентифікатором ManagerID)
 void command_get_s(int managerID) {
-    vector<Member> members = getSlaveRecordsForManager(managerID);
+    vector<Member> members = getSlaveRecordsForManagerFromIndex(managerID);
     cout << "Member records for ManagerID=" << managerID << ":\n";
     for (const auto& cm : members) {
         char dateBuffer[26];
@@ -107,7 +191,7 @@ void command_del_m(int recNo) {
     }
     m.isDeleted = true;
     updateManagerRecord(recNo, m);
-    // Також позначає всі slave записи для цього ManagerID як видалені
+    // Також позначає всі slave записи для цього ManagerID як видалені.
     fstream file(SLAVE_FILE, ios::in | ios::out | ios::binary);
     if (!file) return;
     Member cm;
@@ -121,6 +205,9 @@ void command_del_m(int recNo) {
         }
         pos++;
     }
+    file.close();
+    // Видаляє запис менеджера з індексу підлеглих.
+    slaveIndex.erase(m.ManagerID);
     cout << "Manager (and its slave records) deleted.\n";
 }
 
@@ -131,7 +218,6 @@ void command_del_s(int recNo) {
         cout << "Slave file not found.\n";
         return;
     }
-    // Спочатку зчитує запис
     Member cm;
     fileIn.seekg(recNo * sizeof(Member), ios::beg);
     fileIn.read(reinterpret_cast<char*>(&cm), sizeof(Member));
@@ -142,6 +228,15 @@ void command_del_s(int recNo) {
     }
     cm.isDeleted = true;
     updateMemberRecord(recNo, cm);
+    // Видаляє номер запису зі списку відповідного менеджера.
+    auto it = slaveIndex.find(cm.ManagerID);
+    if (it != slaveIndex.end()) {
+        auto& vec = it->second;
+        vec.erase(remove(vec.begin(), vec.end(), recNo), vec.end());
+        if (vec.empty()) {
+            slaveIndex.erase(cm.ManagerID);
+        }
+    }
     cout << "Slave record deleted.\n";
 }
 
@@ -190,6 +285,7 @@ void command_calc_m() {
         if (!m.isDeleted)
             count++;
     }
+    file.close();
     cout << "Number of master records: " << count << "\n";
 }
 
@@ -201,7 +297,6 @@ void command_calc_s() {
         return;
     }
     int total = 0;
-    // Map managerID -> count
     vector<pair<int, int>> perManager;
     Member cm;
     while (file.read(reinterpret_cast<char*>(&cm), sizeof(Member))) {
@@ -220,6 +315,7 @@ void command_calc_s() {
             }
         }
     }
+    file.close();
     cout << "Total number of slave records: " << total << "\n";
     for (const auto& p : perManager) {
         cout << "ManagerID " << p.first << " has " << p.second << " slave record(s).\n";
@@ -242,6 +338,7 @@ void command_ut_m() {
             << ", isDeleted=" << m.isDeleted << "\n";
         recNo++;
     }
+    file.close();
 }
 
 // ut-s: утиліта для друку всіх slave записів, включаючи службові поля
@@ -265,6 +362,7 @@ void command_ut_s() {
             << ", isDeleted=" << cm.isDeleted << "\n";
         recNo++;
     }
+    file.close();
 }
 
 // Простий командний процесор, який зчитує команди з текстового файлу.
@@ -276,7 +374,6 @@ void processCommands(const string& cmdFilename) {
         cout << "Could not open command file: " << cmdFilename << "\n";
         return;
     }
-
     string line;
     while (getline(cmdFile, line)) {
         if (line.empty()) continue;
@@ -289,7 +386,6 @@ void processCommands(const string& cmdFilename) {
             iss >> m.ManagerID;
             string name;
             getline(iss, name);
-            // Обрізання пробілів
             size_t start = name.find_first_not_of(" \t");
             if (start != string::npos)
                 name = name.substr(start);
@@ -300,7 +396,6 @@ void processCommands(const string& cmdFilename) {
         }
         else if (cmd == "insert-s") {
             // Очікуваний формат: insert-s <MemberID> <ManagerID> <Name> <Role> <TasksPerMonth> <TasksTotal> <LastTaskDate>
-            // Для простоти, припустимо, що LastTaskDate задано як ціле число (time_t)
             Member cm;
             iss >> cm.MemberID >> cm.ManagerID;
             string name, role;
@@ -310,7 +405,11 @@ void processCommands(const string& cmdFilename) {
             strcpy_s(cm.Name, NAME_SIZE, name.c_str());
             strcpy_s(cm.Role, ROLE_SIZE, role.c_str());
             cm.isDeleted = false;
+            // Отримує поточний номер запису перед вставкою.
+            int recNo = getSlaveRecordCount();
             insertMember(cm);
+            // Оновлює глобальний індекс.
+            slaveIndex[cm.ManagerID].push_back(recNo);
             cout << "Inserted Member: " << cm.MemberID << "\n";
         }
         else if (cmd == "get-m") {
@@ -369,6 +468,11 @@ void processCommands(const string& cmdFilename) {
 }
 
 int main() {
-    processCommands("commands.txt");
+    // Очищує всі логічно видалені записи на початку.
+    purgeDeletedMasterRecords();
+    purgeDeletedSlaveRecords();
+    // Білдить slave індекс у пам'яті.
+    slaveIndex = buildSlaveIndex();
+    processCommands("commands2.txt");
     return 0;
 }

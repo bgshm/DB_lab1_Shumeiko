@@ -130,7 +130,9 @@
     <ClCompile Include="DB_lab1_Shumeiko.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Utils.hpp" />
+    <ClInclude Include="Constants.hpp" />
+    <ClInclude Include="Manager.hpp" />
+    <ClInclude Include="Member.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
